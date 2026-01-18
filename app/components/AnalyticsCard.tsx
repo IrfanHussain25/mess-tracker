@@ -1,7 +1,7 @@
 'use client'
 import { useState, useMemo } from 'react'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts'
-import { startOfDay, startOfWeek, startOfMonth, isAfter } from 'date-fns'
+import { startOfWeek, startOfMonth, isSameDay, isSameWeek, isSameMonth } from 'date-fns'
 
 const COLORS = { 
   Breakfast: '#8B5CF6', 
@@ -12,15 +12,21 @@ const COLORS = {
 }
 
 export default function AnalyticsCard({ logs }: { logs: any[] }) {
-  const [view, setView] = useState<'dai' | 'week' | 'month'>('dai')
+  const [view, setView] = useState<'day' | 'week' | 'month'>('day')
 
   const filteredLogs = useMemo(() => {
     if (!logs) return []
     const now = new Date()
-    let startDate = startOfMonth(now)
-    if (view === 'dai') startDate = startOfDay(now)
-    if (view === 'week') startDate = startOfWeek(now, { weekStartsOn: 1 })
-    return logs.filter((log: any) => isAfter(new Date(log.bill_date), startDate))
+    
+    return logs.filter((log: any) => {
+      const logDate = new Date(log.bill_date)
+      
+      // STRICT FILTERING
+      if (view === 'day') return isSameDay(logDate, now)
+      if (view === 'week') return isSameWeek(logDate, now, { weekStartsOn: 1 })
+      if (view === 'month') return isSameMonth(logDate, now)
+      return false
+    })
   }, [logs, view])
 
   const totalSpent = filteredLogs.reduce((acc, log) => acc + log.amount, 0)
@@ -52,7 +58,7 @@ export default function AnalyticsCard({ logs }: { logs: any[] }) {
       </div>
 
       <div className="text-center mb-6">
-        <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">{view}ly Spending</p>
+        <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">{view === 'day' ? 'Today\'s' : view + 'ly'} Spending</p>
         <h2 className="text-4xl font-black text-gray-800 mt-1">₹{totalSpent}</h2>
       </div>
 
@@ -71,7 +77,7 @@ export default function AnalyticsCard({ logs }: { logs: any[] }) {
           </ResponsiveContainer>
         </div>
       ) : (
-        <div className="text-center py-10 text-gray-300 text-sm">No data for this period</div>
+        <div className="text-center py-10 text-gray-300 text-sm">No data for {view}</div>
       )}
     </div>
   )

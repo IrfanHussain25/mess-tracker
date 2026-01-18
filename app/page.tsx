@@ -15,7 +15,6 @@ import ManualAddModal from './components/modals/ManualAddModal'
 import ConfirmModal from './components/modals/ConfirmModal'
 
 export default function Home() {
-  // Initialize Supabase Client
   const [supabase] = useState(() => createClient())
 
   const [user, setUser] = useState<any>(null)
@@ -55,11 +54,23 @@ export default function Home() {
     init()
   }, [])
 
-  // --- PWA SHARE HANDLER ---
+  // --- HELPER: Calculate Meal Type based on Hour ---
+  const getMealTypeFromDate = (date: Date) => {
+    const h = date.getHours()
+    if (h >= 5 && h < 11) return 'Breakfast'
+    if (h >= 11 && h < 16) return 'Lunch'
+    if (h >= 16 && h < 19) return 'Snacks'
+    if (h >= 19 || h < 5) return 'Dinner'
+    return 'Other'
+  }
+
+  // --- PWA SHARE HANDLER (UPDATED DB VERSION) ---
   const handleSharedFile = async () => {
     const t = toast.loading("Loading shared bill...")
     try {
-      const request = indexedDB.open('MessWiseDB', 1)
+      // Open DB Version 2 to match Service Worker
+      const request = indexedDB.open('MessWiseDB', 2)
+      
       request.onsuccess = (e: any) => {
         const db = e.target.result
         if (!db.objectStoreNames.contains('shares')) {
@@ -73,13 +84,25 @@ export default function Home() {
         getReq.onsuccess = async () => {
           const file = getReq.result
           if (file) {
-            store.delete('shared-file') 
+            store.delete('shared-file') // Clean up
+            
+            // Validate File
+            if (file.size === 0) {
+                toast.dismiss(t)
+                toast.error("Shared file was empty")
+                return
+            }
+
             toast.dismiss(t)
             await processOCR(file) 
           } else {
             toast.dismiss(t)
           }
         }
+      }
+      request.onerror = () => {
+          toast.dismiss(t)
+          toast.error("Database error")
       }
     } catch (err) {
       console.error(err)
@@ -110,16 +133,19 @@ export default function Home() {
 
   const handleManualAdd = async (amt: string, dateStr: string) => {
     const d = dateStr ? new Date(dateStr) : new Date()
-    const h = d.getHours()
-    let type = 'Other'
-    if (h>=7 && h<11) type='Breakfast'; else if(h>=12 && h<16) type='Lunch'; else if(h>=19) type='Dinner'
+    const type = getMealTypeFromDate(d)
 
-    const { error } = await supabase.from('mess_logs').insert({ user_id: user.id, amount: parseInt(amt), bill_date: d.toISOString(), meal_type: type })
+    const { error } = await supabase.from('mess_logs').insert({ 
+      user_id: user.id, 
+      amount: parseInt(amt), 
+      bill_date: d.toISOString(), 
+      meal_type: type 
+    })
     
     if (!error) {
       fetchData(user.id)
       setShowManualModal(false)
-      toast.success("Added")
+      toast.success(`Added as ${type}!`)
     } else {
       toast.error("Add failed")
     }
@@ -150,7 +176,7 @@ export default function Home() {
   }
 
   // --- CLIENT SIDE OCR LOGIC ---
-  const processOCR = async (file: File) => {
+  const processOCR = async (file: File | Blob) => {
     setUploading(true)
     const t = toast.loading("Scanning...")
     
@@ -171,8 +197,10 @@ export default function Home() {
         const timeStr = match[3]
         let amount = parseInt(match[4])
 
-        if (amount > 1000 && amount.toString().startsWith('2')) {
-           amount = parseInt(amount.toString().substring(1))
+        // Fix: Phantom '2' OR '3'
+        const amtStr = amount.toString()
+        if (amount > 1000 && (amtStr.startsWith('2') || amtStr.startsWith('3'))) {
+           amount = parseInt(amtStr.substring(1))
         }
 
         let timestamp = new Date().toISOString()
@@ -180,11 +208,7 @@ export default function Home() {
         try {
           const d = new Date(`${dateStr} ${timeStr}`)
           timestamp = d.toISOString()
-          const h = d.getHours()
-          if (h >= 7 && h < 11) mealType = 'Breakfast'
-          else if (h >= 12 && h < 16) mealType = 'Lunch'
-          else if (h >= 17 && h < 19) mealType = 'Snacks'
-          else if (h >= 19 || h < 4) mealType = 'Dinner'
+          mealType = getMealTypeFromDate(d)
         } catch (e) {
           console.error("Date parse error", e)
         }
@@ -226,18 +250,15 @@ export default function Home() {
     e.target.value = '' 
   }
 
-  // --- FIXED AUTH HANDLER ---
   const handleAuth = async () => {
     if (!email || !password) return toast.error("Please fill in all fields")
     
     try {
       if (isLogin) {
-        // EXPLICIT CALL - No variables, no abstractions
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
         window.location.reload()
       } else {
-        // EXPLICIT CALL
         const { error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
         toast.success("Account created! Logging you in...")
@@ -249,7 +270,7 @@ export default function Home() {
   }
 
   if (!user && !loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6 text-gray-900">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
       <div className="w-full max-w-sm bg-white p-8 rounded-3xl shadow-xl space-y-6">
         <h1 className="text-3xl font-bold text-center text-purple-600">MessWise</h1>
         <input className="w-full border p-4 rounded-xl outline-none" placeholder="Email" onChange={e => setEmail(e.target.value)} />

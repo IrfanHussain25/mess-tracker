@@ -4,11 +4,9 @@ import { Trash2, ReceiptText, Clock, Filter, Calendar } from 'lucide-react'
 import { format } from 'date-fns'
 
 export default function LogsList({ logs, onDelete }: any) {
-  // Defaults to current month
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'))
   const [selectedType, setSelectedType] = useState('All')
 
-  // --- FILTERING & SORTING ---
   const processedLogs = useMemo(() => {
     if (!logs) return []
 
@@ -16,17 +14,13 @@ export default function LogsList({ logs, onDelete }: any) {
       .filter((log: any) => {
         const logDate = new Date(log.bill_date || log.created_at)
         
-        // 1. Month Filter
         const [year, month] = selectedMonth.split('-')
         const isMonthMatch = logDate.getFullYear() === parseInt(year) && logDate.getMonth() + 1 === parseInt(month)
-
-        // 2. Meal Type Filter
         const isTypeMatch = selectedType === 'All' || (log.meal_type || 'Other') === selectedType
 
         return isMonthMatch && isTypeMatch
       })
       .sort((a: any, b: any) => {
-        // 3. Sort Newest First
         return new Date(b.bill_date).getTime() - new Date(a.bill_date).getTime()
       })
   }, [logs, selectedMonth, selectedType])
@@ -47,7 +41,6 @@ export default function LogsList({ logs, onDelete }: any) {
 
         {/* Filters */}
         <div className="flex gap-2">
-          {/* Month Input */}
           <div className="relative flex-1 group">
             <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-hover:text-purple-500 transition-colors">
               <Calendar size={14} />
@@ -60,7 +53,6 @@ export default function LogsList({ logs, onDelete }: any) {
             />
           </div>
 
-          {/* Type Dropdown */}
           <div className="relative flex-1 group">
              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-hover:text-purple-500 transition-colors">
               <Filter size={14} />
@@ -90,36 +82,42 @@ export default function LogsList({ logs, onDelete }: any) {
         ) : (
           processedLogs.map((log: any) => (
             <div key={log.id} className="bg-white p-4 rounded-2xl border border-gray-100 flex justify-between items-center shadow-sm hover:shadow-md transition-all group">
-              <div className="flex items-center gap-4">
-                <div className={`h-12 w-12 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${log.bill_no ? 'bg-purple-50 text-purple-600' : 'bg-orange-50 text-orange-600'}`}>
+              <div className="flex items-center gap-3 overflow-hidden">
+                <div className={`h-10 w-10 sm:h-12 sm:w-12 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold shrink-0 ${log.bill_no ? 'bg-purple-50 text-purple-600' : 'bg-orange-50 text-orange-600'}`}>
                   {log.bill_no || <ReceiptText size={18}/>}
                 </div>
                 
-                <div className="min-w-0">
-                  <p className="font-bold text-gray-700 truncate">
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-gray-700 truncate text-sm sm:text-base">
                     {log.bill_no ? `Bill #${log.bill_no}` : 'Manual Entry'}
                   </p>
-                  <div className="flex items-center gap-2 text-xs text-gray-400 font-medium mt-1">
-                    <span className={`px-2 py-0.5 rounded-md ${
+                  
+                  {/* --- FIX START: Better Mobile Layout for Date/Time --- */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400 font-medium mt-1">
+                    <span className={`px-2 py-0.5 rounded-md whitespace-nowrap ${
                       log.meal_type === 'Dinner' ? 'bg-indigo-50 text-indigo-500' :
                       log.meal_type === 'Lunch' ? 'bg-emerald-50 text-emerald-500' :
                       'bg-gray-100 text-gray-500'
                     }`}>
                       {log.meal_type}
                     </span>
-                    <span>•</span>
-                    <span>{format(new Date(log.bill_date), 'dd MMM, hh:mm a')}</span>
+                    <span className="hidden sm:inline">•</span>
+                    <span className="whitespace-nowrap">
+                      {format(new Date(log.bill_date), 'dd MMM, h:mm a')}
+                    </span>
                   </div>
+                  {/* --- FIX END --- */}
+                  
                 </div>
               </div>
               
-              <div className="flex items-center gap-3 pl-2">
-                <span className="text-red-500 font-bold text-lg whitespace-nowrap">-₹{log.amount}</span>
+              <div className="flex items-center gap-2 sm:gap-3 pl-2 shrink-0">
+                <span className="text-red-500 font-bold text-base sm:text-lg whitespace-nowrap">-₹{log.amount}</span>
                 <button 
                   onClick={() => onDelete(log.id, log.amount)} 
                   className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-all md:opacity-0 md:group-hover:opacity-100"
                 >
-                  <Trash2 size={18} />
+                  <Trash2 size={16} />
                 </button>
               </div>
             </div>
