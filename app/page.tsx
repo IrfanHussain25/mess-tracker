@@ -4,6 +4,7 @@ import { createClient } from './utils/supabase/client'
 import toast from 'react-hot-toast'
 import { Camera, PenTool, LogOut } from 'lucide-react'
 import { isSameMonth } from 'date-fns'
+import Tesseract from 'tesseract.js'
 
 import Greeting from './components/Greeting'
 import AnalyticsCard from './components/AnalyticsCard'
@@ -14,7 +15,9 @@ import ManualAddModal from './components/modals/ManualAddModal'
 import ConfirmModal from './components/modals/ConfirmModal'
 
 export default function Home() {
-  const supabase = createClient()
+  // Initialize Supabase Client
+  const [supabase] = useState(() => createClient())
+
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
@@ -54,12 +57,11 @@ export default function Home() {
 
   // --- PWA SHARE HANDLER ---
   const handleSharedFile = async () => {
-    const t = toast.loading("Processing shared bill...")
+    const t = toast.loading("Loading shared bill...")
     try {
       const request = indexedDB.open('MessWiseDB', 1)
       request.onsuccess = (e: any) => {
         const db = e.target.result
-        // Check if object store exists before transaction
         if (!db.objectStoreNames.contains('shares')) {
              toast.dismiss(t)
              return
@@ -71,11 +73,9 @@ export default function Home() {
         getReq.onsuccess = async () => {
           const file = getReq.result
           if (file) {
-            store.delete('shared-file') // Clean up
+            store.delete('shared-file') 
             toast.dismiss(t)
-            // Trigger normal upload logic
-            const fakeEvent = { target: { files: [file] } } as any
-            await handleFileUpload(fakeEvent)
+            await processOCR(file) 
           } else {
             toast.dismiss(t)
           }
@@ -149,40 +149,95 @@ export default function Home() {
     }
   }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files?.[0]) return
-    setUploading(true); const t = toast.loading("Scanning...")
-    const fd = new FormData(); fd.append('file', e.target.files[0])
+  // --- CLIENT SIDE OCR LOGIC ---
+  const processOCR = async (file: File) => {
+    setUploading(true)
+    const t = toast.loading("Scanning...")
     
     try {
-      const res = await fetch('/api/ocr', { method: 'POST', body: fd })
-      const data = await res.json()
-      if(data.success && data.data.length > 0) {
+      const { data: { text } } = await Tesseract.recognize(
+        file,
+        'eng',
+        { logger: m => {} }
+      )
+
+      const billPattern = /Bill\s*No\D*?(\d+)[\s\S]*?Date\D*?(\d{1,2}\/\d{1,2}\/\d{4})[\s\S]*?(\d{1,2}:\d{2}:\d{2})[\s\S]*?Total\D*?(\d+)/gi;
+      const bills = []
+      let match
+
+      while ((match = billPattern.exec(text)) !== null) {
+        const billNo = parseInt(match[1])
+        const dateStr = match[2]
+        const timeStr = match[3]
+        let amount = parseInt(match[4])
+
+        if (amount > 1000 && amount.toString().startsWith('2')) {
+           amount = parseInt(amount.toString().substring(1))
+        }
+
+        let timestamp = new Date().toISOString()
+        let mealType = 'Other'
+        try {
+          const d = new Date(`${dateStr} ${timeStr}`)
+          timestamp = d.toISOString()
+          const h = d.getHours()
+          if (h >= 7 && h < 11) mealType = 'Breakfast'
+          else if (h >= 12 && h < 16) mealType = 'Lunch'
+          else if (h >= 17 && h < 19) mealType = 'Snacks'
+          else if (h >= 19 || h < 4) mealType = 'Dinner'
+        } catch (e) {
+          console.error("Date parse error", e)
+        }
+
+        bills.push({
+          bill_no: billNo,
+          amount: amount,
+          bill_date: timestamp,
+          meal_type: mealType
+        })
+      }
+
+      if(bills.length > 0) {
         let count = 0
-        for(const bill of data.data) {
+        for(const bill of bills) {
           const exists = logs.some(l => l.bill_no === bill.bill_no && l.amount === bill.amount)
           if(!exists) {
             await supabase.from('mess_logs').insert({ ...bill, user_id: user.id })
             count++
           }
         }
-        fetchData(user.id); toast.success(`Added ${count} bills`, { id: t })
-      } else toast.error("No bills found", { id: t })
-    } catch { toast.error("Error", { id: t }) }
-    setUploading(false); e.target.value=''
+        fetchData(user.id)
+        toast.success(`Scanned! Added ${count} new bills`, { id: t })
+      } else {
+        toast.error("No clear bills found in image", { id: t })
+      }
+
+    } catch (err: any) {
+      console.error(err)
+      toast.error("Scan failed.", { id: t })
+    } finally {
+      setUploading(false)
+    }
   }
 
-  // --- CORRECTED AUTH HANDLER ---
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0]) return
+    await processOCR(e.target.files[0])
+    e.target.value = '' 
+  }
+
+  // --- FIXED AUTH HANDLER ---
   const handleAuth = async () => {
     if (!email || !password) return toast.error("Please fill in all fields")
     
     try {
-      // Calling methods DIRECTLY preserves the 'this' context
       if (isLogin) {
+        // EXPLICIT CALL - No variables, no abstractions
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
         window.location.reload()
       } else {
+        // EXPLICIT CALL
         const { error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
         toast.success("Account created! Logging you in...")
