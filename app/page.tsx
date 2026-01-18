@@ -1,290 +1,242 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { createClient } from './utils/supabase/client'
 import toast from 'react-hot-toast'
 import { Camera, PenTool, LogOut } from 'lucide-react'
+import { isSameMonth } from 'date-fns'
 
-// Components
+import Greeting from './components/Greeting'
+import AnalyticsCard from './components/AnalyticsCard'
 import BudgetCard from './components/BudgetCard'
 import LogsList from './components/LogsList'
 import EditBudgetModal from './components/modals/EditBudgetModal'
 import ManualAddModal from './components/modals/ManualAddModal'
+import ConfirmModal from './components/modals/ConfirmModal'
 
 export default function Home() {
   const supabase = createClient()
-  
-  // -- State --
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
   const [purse, setPurse] = useState(4000)
   const [logs, setLogs] = useState<any[]>([])
   const [spent, setSpent] = useState(0)
-  const [uploading, setUploading] = useState(false)
-  
+
   // Modals
   const [showBudgetModal, setShowBudgetModal] = useState(false)
   const [showManualModal, setShowManualModal] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<{id: string, amount: number} | null>(null)
 
-  // Auth Form
+  // Auth
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLogin, setIsLogin] = useState(true)
 
-  // -- Init --
   useEffect(() => {
-    checkUser()
+    const init = async () => {
+      // 1. Check for Shared File (PWA Feature)
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search)
+        if (params.get('share') === 'true') {
+          handleSharedFile()
+          window.history.replaceState({}, '', '/')
+        }
+      }
+
+      // 2. Check Auth
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) { setUser(user); fetchData(user.id) }
+      setLoading(false)
+    }
+    init()
   }, [])
 
-  const checkUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (user) {
-      setUser(user)
-      fetchData(user.id)
+  // --- PWA SHARE HANDLER ---
+  const handleSharedFile = async () => {
+    const t = toast.loading("Processing shared bill...")
+    try {
+      const request = indexedDB.open('MessWiseDB', 1)
+      request.onsuccess = (e: any) => {
+        const db = e.target.result
+        // Check if object store exists before transaction
+        if (!db.objectStoreNames.contains('shares')) {
+             toast.dismiss(t)
+             return
+        }
+        const tx = db.transaction('shares', 'readwrite')
+        const store = tx.objectStore('shares')
+        const getReq = store.get('shared-file')
+
+        getReq.onsuccess = async () => {
+          const file = getReq.result
+          if (file) {
+            store.delete('shared-file') // Clean up
+            toast.dismiss(t)
+            // Trigger normal upload logic
+            const fakeEvent = { target: { files: [file] } } as any
+            await handleFileUpload(fakeEvent)
+          } else {
+            toast.dismiss(t)
+          }
+        }
+      }
+    } catch (err) {
+      console.error(err)
+      toast.dismiss(t)
     }
-    setLoading(false)
   }
 
-  const fetchData = async (userId: string) => {
-    // 1. Fetch Budget
+  const fetchData = useCallback(async (userId: string) => {
     let { data: settings } = await supabase.from('user_settings').select('monthly_purse').eq('user_id', userId).single()
     if (!settings) {
-      await supabase.from('user_settings').insert({ user_id: userId, monthly_purse: 4000 })
-      setPurse(4000)
-    } else {
-      setPurse(settings.monthly_purse)
+      await supabase.from('user_settings').insert({ user_id: userId, monthly_purse: 4000 }); settings = { monthly_purse: 4000 }
     }
+    setPurse(settings.monthly_purse)
 
-    // 2. Fetch Logs
-    const { data: logsData } = await supabase
-      .from('mess_logs')
-      .select('*')
-      .eq('user_id', userId)
-      .order('bill_date', { ascending: false })
-
+    const { data: logsData } = await supabase.from('mess_logs').select('*').eq('user_id', userId).order('bill_date', { ascending: false })
+    
     if (logsData) {
       setLogs(logsData)
-      setSpent(logsData.reduce((acc, item) => acc + Number(item.amount), 0))
+      const currentMonthLogs = logsData.filter(log => isSameMonth(new Date(log.bill_date), new Date()))
+      setSpent(currentMonthLogs.reduce((acc, item) => acc + Number(item.amount), 0))
     }
+  }, [supabase])
+
+  const handleUpdateBudget = async (val: number) => {
+    await supabase.from('user_settings').update({ monthly_purse: val }).eq('user_id', user.id)
+    setPurse(val); setShowBudgetModal(false); toast.success("Budget Updated")
   }
 
-  // -- Logic --
+  const handleManualAdd = async (amt: string, dateStr: string) => {
+    const d = dateStr ? new Date(dateStr) : new Date()
+    const h = d.getHours()
+    let type = 'Other'
+    if (h>=7 && h<11) type='Breakfast'; else if(h>=12 && h<16) type='Lunch'; else if(h>=19) type='Dinner'
 
-  const handleUpdateBudget = async (newAmount: number) => {
-    const { error } = await supabase.from('user_settings').update({ monthly_purse: newAmount }).eq('user_id', user.id)
-    if (error) {
-      toast.error("Failed to update budget")
-    } else {
-      setPurse(newAmount)
-      setShowBudgetModal(false)
-      toast.success("Budget updated successfully!")
-    }
-  }
-
-  const handleManualAdd = async (amountStr: string, dateStr: string) => {
-    const amount = parseInt(amountStr)
-    const date = dateStr ? new Date(dateStr).toISOString() : new Date().toISOString()
+    const { error } = await supabase.from('mess_logs').insert({ user_id: user.id, amount: parseInt(amt), bill_date: d.toISOString(), meal_type: type })
     
-    const { error } = await supabase.from('mess_logs').insert({
-      user_id: user.id,
-      amount,
-      bill_date: date,
-      bill_no: null
-    })
-
-    if (error) {
-      toast.error("Failed to add entry")
-    } else {
+    if (!error) {
       fetchData(user.id)
       setShowManualModal(false)
-      toast.success("Transaction added!")
+      toast.success("Added")
+    } else {
+      toast.error("Add failed")
     }
   }
 
-  const handleDelete = (id: string, amount: number) => {
-    // Custom Toast Confirmation
-    toast((t) => (
-      <div className="flex flex-col gap-2">
-        <span className="font-semibold">Delete this ₹{amount} log?</span>
-        <div className="flex gap-2">
-          <button 
-            onClick={async () => {
-              toast.dismiss(t.id)
-              const { error } = await supabase.from('mess_logs').delete().eq('id', id)
-              if (!error) {
-                toast.success("Deleted")
-                fetchData(user.id)
-              }
-            }}
-            className="bg-red-500 text-white px-3 py-1 rounded text-sm"
-          >
-            Delete
-          </button>
-          <button 
-            onClick={() => toast.dismiss(t.id)}
-            className="bg-gray-200 px-3 py-1 rounded text-sm"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    ), { duration: 4000 })
+  const confirmDelete = (id: string, amount: number) => {
+    setDeleteTarget({ id, amount })
+    setShowDeleteModal(true)
+  }
+
+  const executeDelete = async () => {
+    if (!deleteTarget) return
+    const previousLogs = [...logs]
+    const previousSpent = spent
+
+    setLogs(current => current.filter(log => log.id !== deleteTarget.id))
+    setSpent(prev => prev - deleteTarget.amount)
+
+    try {
+      const { error } = await supabase.from('mess_logs').delete().eq('id', deleteTarget.id)
+      if (error) throw error
+      toast.success("Transaction Deleted")
+    } catch (err: any) {
+      setLogs(previousLogs)
+      setSpent(previousSpent)
+      toast.error("Failed to delete")
+    }
   }
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return
-    setUploading(true)
-    const loadToast = toast.loading("Scanning bill...")
+    setUploading(true); const t = toast.loading("Scanning...")
+    const fd = new FormData(); fd.append('file', e.target.files[0])
     
-    const formData = new FormData()
-    formData.append('file', e.target.files[0])
-
     try {
-      const res = await fetch('/api/ocr', { method: 'POST', body: formData })
-      const result = await res.json()
-
-      if (result.success && result.data.length > 0) {
-        let added = 0
-        let skipped = 0
-
-        for (const bill of result.data) {
-          // Check Duplicate (Same Bill No + Same Amount)
-          const isDuplicate = logs.some(l => l.bill_no === bill.bill_no && l.amount === bill.amount)
-          
-          if (!isDuplicate) {
-            await supabase.from('mess_logs').insert({
-              user_id: user.id,
-              amount: bill.amount,
-              bill_no: bill.bill_no,
-              bill_date: bill.bill_date
-            })
-            added++
-          } else {
-            skipped++
+      const res = await fetch('/api/ocr', { method: 'POST', body: fd })
+      const data = await res.json()
+      if(data.success && data.data.length > 0) {
+        let count = 0
+        for(const bill of data.data) {
+          const exists = logs.some(l => l.bill_no === bill.bill_no && l.amount === bill.amount)
+          if(!exists) {
+            await supabase.from('mess_logs').insert({ ...bill, user_id: user.id })
+            count++
           }
         }
-        
-        fetchData(user.id)
-        toast.dismiss(loadToast)
-        
-        // Detailed Result Toast
-        toast.custom((t) => (
-          <div className={`${t.visible ? 'animate-enter' : 'animate-leave'} bg-white shadow-lg rounded-lg pointer-events-auto flex ring-1 ring-black ring-opacity-5 p-4`}>
-             <div className="flex-1 w-0">
-                <div className="flex items-start">
-                   <div className="ml-3 flex-1">
-                      <p className="text-sm font-medium text-gray-900">Scan Complete</p>
-                      <p className="mt-1 text-sm text-gray-500">
-                        Added {added} new bills.<br/>
-                        Skipped {skipped} duplicates.
-                      </p>
-                   </div>
-                </div>
-             </div>
-             <div className="flex border-l border-gray-200 ml-4">
-                <button onClick={() => toast.dismiss(t.id)} className="w-full border border-transparent rounded-none rounded-r-lg p-4 flex items-center justify-center text-sm font-medium text-indigo-600 hover:text-indigo-500">
-                  Close
-                </button>
-             </div>
-          </div>
-        ), { duration: 5000 })
+        fetchData(user.id); toast.success(`Added ${count} bills`, { id: t })
+      } else toast.error("No bills found", { id: t })
+    } catch { toast.error("Error", { id: t }) }
+    setUploading(false); e.target.value=''
+  }
 
+  // --- CORRECTED AUTH HANDLER ---
+  const handleAuth = async () => {
+    if (!email || !password) return toast.error("Please fill in all fields")
+    
+    try {
+      // Calling methods DIRECTLY preserves the 'this' context
+      if (isLogin) {
+        const { error } = await supabase.auth.signInWithPassword({ email, password })
+        if (error) throw error
+        window.location.reload()
       } else {
-        toast.error("No clear bills found", { id: loadToast })
+        const { error } = await supabase.auth.signUp({ email, password })
+        if (error) throw error
+        toast.success("Account created! Logging you in...")
+        window.location.reload()
       }
-    } catch (err) {
-      toast.error("Scan failed", { id: loadToast })
-    } finally {
-      setUploading(false)
-      e.target.value = ''
+    } catch (error: any) {
+      toast.error(error.message)
     }
   }
 
-  // -- Render Login --
   if (!user && !loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-      <div className="w-full max-w-sm bg-white p-8 rounded-2xl shadow-xl space-y-6">
-        <h1 className="text-3xl font-bold text-center text-blue-600">MessWise</h1>
-        <input className="w-full border p-3 rounded-xl bg-gray-50" placeholder="Email" onChange={e => setEmail(e.target.value)} />
-        <input className="w-full border p-3 rounded-xl bg-gray-50" type="password" placeholder="Password" onChange={e => setPassword(e.target.value)} />
-        <button 
-          onClick={async () => {
-             const action = isLogin ? supabase.auth.signInWithPassword : supabase.auth.signUp
-             const { error } = await action({ email, password })
-             if (error) toast.error(error.message)
-             else { toast.success("Welcome!"); window.location.reload() }
-          }} 
-          className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold hover:bg-blue-700 transition-colors"
-        >
-          {isLogin ? 'Login' : 'Create Account'}
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6 text-gray-900">
+      <div className="w-full max-w-sm bg-white p-8 rounded-3xl shadow-xl space-y-6">
+        <h1 className="text-3xl font-bold text-center text-purple-600">MessWise</h1>
+        <input className="w-full border p-4 rounded-xl outline-none" placeholder="Email" onChange={e => setEmail(e.target.value)} />
+        <input className="w-full border p-4 rounded-xl outline-none" type="password" placeholder="Password" onChange={e => setPassword(e.target.value)} />
+        <button onClick={handleAuth} className="w-full bg-purple-600 text-white p-4 rounded-xl font-bold hover:bg-purple-700">
+            {isLogin ? 'Login' : 'Create Account'}
         </button>
-        <p className="text-center text-sm text-gray-500 cursor-pointer" onClick={() => setIsLogin(!isLogin)}>
-          {isLogin ? 'New here? Sign up' : 'Has account? Login'}
-        </p>
+        <p className="text-center text-sm text-gray-400 cursor-pointer" onClick={() => setIsLogin(!isLogin)}>{isLogin ? 'New here? Sign up' : 'Login'}</p>
       </div>
     </div>
   )
 
-  if (loading) return <div className="h-screen flex items-center justify-center text-gray-400">Loading...</div>
+  if (loading) return <div className="h-screen flex items-center justify-center">Loading...</div>
 
-  // -- Render Dashboard --
   return (
-    <main className="min-h-screen bg-gray-50 font-sans">
-      {/* Header */}
-      <div className="bg-blue-600 p-6 pb-20 rounded-b-[2.5rem] shadow-lg shadow-blue-200 relative">
-        <div className="flex justify-between items-center text-white max-w-md mx-auto">
-          <div>
-            <h1 className="text-xl font-bold">Dashboard</h1>
-            <p className="text-blue-200 text-xs">{user?.email}</p>
-          </div>
-          <button onClick={() => supabase.auth.signOut().then(() => setUser(null))} className="p-2 bg-blue-700/50 rounded-full hover:bg-blue-700 transition-colors">
-            <LogOut size={16} />
-          </button>
-        </div>
+    <main className="min-h-screen bg-gray-50 font-sans pb-24">
+      <div className="bg-white/80 backdrop-blur-md px-6 py-4 shadow-sm border-b sticky top-0 z-20 flex justify-between items-center">
+        <Greeting name={user?.email?.split('@')[0]} />
+        <button onClick={() => supabase.auth.signOut().then(() => setUser(null))} className="ml-4 p-2 bg-gray-50 rounded-full text-gray-400 hover:text-red-500"><LogOut size={20}/></button>
       </div>
 
-      <div className="max-w-md mx-auto px-5 -mt-14 space-y-6">
+      <div className="max-w-md mx-auto px-5 pt-6 space-y-6">
         <BudgetCard spent={spent} total={purse} onEdit={() => setShowBudgetModal(true)} />
-
-        {/* Action Buttons */}
+        <AnalyticsCard logs={logs} />
         <div className="grid grid-cols-2 gap-4">
-          <label className={`
-            flex flex-col items-center justify-center p-5 rounded-2xl border-2 border-dashed transition-all cursor-pointer bg-white border-blue-200 hover:bg-blue-50 group
-            ${uploading ? 'opacity-50 pointer-events-none' : ''}
-          `}>
+          <label className={`flex flex-col items-center justify-center p-5 rounded-3xl border bg-white hover:border-purple-200 cursor-pointer group ${uploading ? 'opacity-50' : ''}`}>
             <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" disabled={uploading} />
-            <div className="h-10 w-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
-              <Camera size={20} />
-            </div>
-            <p className="font-bold text-gray-700 text-sm">Scan Bill</p>
+            <div className="h-12 w-12 bg-purple-50 text-purple-600 rounded-full flex items-center justify-center mb-2 group-hover:scale-110"><Camera size={24}/></div>
+            <p className="font-bold text-gray-600 text-sm">Scan Bill</p>
           </label>
-
-          <button 
-            onClick={() => setShowManualModal(true)}
-            className="flex flex-col items-center justify-center p-5 rounded-2xl border-2 border-dashed bg-white border-gray-200 hover:bg-gray-50 transition-all group"
-          >
-             <div className="h-10 w-10 bg-gray-100 text-gray-600 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
-               <PenTool size={20} />
-             </div>
-            <p className="font-bold text-gray-700 text-sm">Manual Add</p>
+          <button onClick={() => setShowManualModal(true)} className="flex flex-col items-center justify-center p-5 rounded-3xl border bg-white hover:border-purple-200 group">
+             <div className="h-12 w-12 bg-gray-50 text-gray-500 rounded-full flex items-center justify-center mb-2 group-hover:scale-110"><PenTool size={24}/></div>
+            <p className="font-bold text-gray-600 text-sm">Manual Add</p>
           </button>
         </div>
-
-        <LogsList logs={logs} onDelete={handleDelete} />
+        
+        <LogsList logs={logs} onDelete={confirmDelete} />
       </div>
 
-      {/* Modals */}
-      <EditBudgetModal 
-        isOpen={showBudgetModal} 
-        onClose={() => setShowBudgetModal(false)} 
-        currentBudget={purse}
-        onSave={handleUpdateBudget}
-      />
-
-      <ManualAddModal 
-        isOpen={showManualModal} 
-        onClose={() => setShowManualModal(false)} 
-        onAdd={handleManualAdd}
-      />
+      <EditBudgetModal isOpen={showBudgetModal} onClose={() => setShowBudgetModal(false)} currentBudget={purse} onSave={handleUpdateBudget} />
+      <ManualAddModal isOpen={showManualModal} onClose={() => setShowManualModal(false)} onAdd={handleManualAdd} />
+      <ConfirmModal isOpen={showDeleteModal} onClose={() => setShowDeleteModal(false)} onConfirm={executeDelete} title="Delete Transaction" message={`Delete this transaction of ₹${deleteTarget?.amount}?`} />
     </main>
   )
 }
