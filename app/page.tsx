@@ -14,9 +14,9 @@ import EditBudgetModal from './components/modals/EditBudgetModal'
 import ManualAddModal from './components/modals/ManualAddModal'
 import ConfirmModal from './components/modals/ConfirmModal'
 
+
 export default function Home() {
   const [supabase] = useState(() => createClient())
-
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
@@ -40,8 +40,16 @@ export default function Home() {
       // 1. Check for Shared File (PWA Feature)
       if (typeof window !== 'undefined') {
         const params = new URLSearchParams(window.location.search)
+        
+        // Success Flag
         if (params.get('share') === 'true') {
           handleSharedFile()
+          window.history.replaceState({}, '', '/')
+        }
+        
+        // Error Flag (from Service Worker fallback)
+        if (params.get('share_error')) {
+          toast.error("Share missed. Please try again.")
           window.history.replaceState({}, '', '/')
         }
       }
@@ -54,29 +62,33 @@ export default function Home() {
     init()
   }, [])
 
-  // --- HELPER: Calculate Meal Type based on Hour ---
-  const getMealTypeFromDate = (date: Date) => {
-    const h = date.getHours()
-    if (h >= 5 && h < 11) return 'Breakfast'
-    if (h >= 11 && h < 16) return 'Lunch'
-    if (h >= 16 && h < 19) return 'Snacks'
-    if (h >= 19 && h < 23) return 'Dinner'
-    return 'Other'
-  }
-
-  // --- PWA SHARE HANDLER (UPDATED DB VERSION) ---
+  // --- ROBUST PWA SHARE HANDLER ---
   const handleSharedFile = async () => {
     const t = toast.loading("Loading shared bill...")
+    
     try {
-      // Open DB Version 2 to match Service Worker
-      const request = indexedDB.open('MessWiseDB', 2)
+      // Use Version 3 (Matches your Service Worker)
+      const request = indexedDB.open('MessWiseDB', 3)
       
+      request.onerror = (e) => {
+        console.error("DB Open Error:", e)
+        toast.dismiss(t)
+        toast.error("Cannot access storage")
+      }
+
       request.onsuccess = (e: any) => {
         const db = e.target.result
+        
+        // AUTO-REPAIR: If store is missing, delete DB and reset
         if (!db.objectStoreNames.contains('shares')) {
+             console.error("Corrupt DB: 'shares' missing. Deleting DB...")
+             db.close()
+             indexedDB.deleteDatabase('MessWiseDB')
              toast.dismiss(t)
+             toast.error("App updated. Please share the file again!")
              return
         }
+
         const tx = db.transaction('shares', 'readwrite')
         const store = tx.objectStore('shares')
         const getReq = store.get('shared-file')
@@ -84,29 +96,26 @@ export default function Home() {
         getReq.onsuccess = async () => {
           const file = getReq.result
           if (file) {
+            console.log("File Found:", file.name)
             store.delete('shared-file') // Clean up
-            
-            // Validate File
-            if (file.size === 0) {
-                toast.dismiss(t)
-                toast.error("Shared file was empty")
-                return
-            }
-
             toast.dismiss(t)
             await processOCR(file) 
           } else {
+            console.warn("No file in DB")
             toast.dismiss(t)
+            toast.error("Share Empty. Try again.")
           }
         }
-      }
-      request.onerror = () => {
+        
+        getReq.onerror = () => {
           toast.dismiss(t)
-          toast.error("Database error")
+          toast.error("Read failed")
+        }
       }
     } catch (err) {
-      console.error(err)
+      console.error("Critical Share Error:", err)
       toast.dismiss(t)
+      toast.error("Share Failed")
     }
   }
 
@@ -133,19 +142,16 @@ export default function Home() {
 
   const handleManualAdd = async (amt: string, dateStr: string) => {
     const d = dateStr ? new Date(dateStr) : new Date()
-    const type = getMealTypeFromDate(d)
+    const h = d.getHours()
+    let type = 'Other'
+    if (h>=7 && h<11) type='Breakfast'; else if(h>=12 && h<16) type='Lunch'; else if(h>=19) type='Dinner'
 
-    const { error } = await supabase.from('mess_logs').insert({ 
-      user_id: user.id, 
-      amount: parseInt(amt), 
-      bill_date: d.toISOString(), 
-      meal_type: type 
-    })
+    const { error } = await supabase.from('mess_logs').insert({ user_id: user.id, amount: parseInt(amt), bill_date: d.toISOString(), meal_type: type })
     
     if (!error) {
       fetchData(user.id)
       setShowManualModal(false)
-      toast.success(`Added as ${type}!`)
+      toast.success("Added")
     } else {
       toast.error("Add failed")
     }
@@ -176,9 +182,9 @@ export default function Home() {
   }
 
   // --- CLIENT SIDE OCR LOGIC ---
-  const processOCR = async (file: File | Blob) => {
+  const processOCR = async (file: File) => {
     setUploading(true)
-    const t = toast.loading("Scanning...")
+    const t = toast.loading("Scanning Bill...")
     
     try {
       const { data: { text } } = await Tesseract.recognize(
@@ -197,7 +203,6 @@ export default function Home() {
         const timeStr = match[3]
         let amount = parseInt(match[4])
 
-        // Fix: Phantom '2' OR '3'
         const amtStr = amount.toString()
         if (amount > 1000 && (amtStr.startsWith('2') || amtStr.startsWith('3'))) {
            amount = parseInt(amtStr.substring(1))
@@ -208,7 +213,11 @@ export default function Home() {
         try {
           const d = new Date(`${dateStr} ${timeStr}`)
           timestamp = d.toISOString()
-          mealType = getMealTypeFromDate(d)
+          const h = d.getHours()
+          if (h >= 7 && h < 11) mealType = 'Breakfast'
+          else if (h >= 12 && h < 16) mealType = 'Lunch'
+          else if (h >= 17 && h < 19) mealType = 'Snacks'
+          else if (h >= 19 || h < 4) mealType = 'Dinner'
         } catch (e) {
           console.error("Date parse error", e)
         }
@@ -233,7 +242,7 @@ export default function Home() {
         fetchData(user.id)
         toast.success(`Scanned! Added ${count} new bills`, { id: t })
       } else {
-        toast.error("No clear bills found in image", { id: t })
+        toast.error("No clear bills found.", { id: t })
       }
 
     } catch (err: any) {
@@ -252,7 +261,6 @@ export default function Home() {
 
   const handleAuth = async () => {
     if (!email || !password) return toast.error("Please fill in all fields")
-    
     try {
       if (isLogin) {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
