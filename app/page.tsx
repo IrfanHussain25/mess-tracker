@@ -60,7 +60,7 @@ export default function Home() {
     if (h >= 5 && h < 11) return 'Breakfast'
     if (h >= 11 && h < 16) return 'Lunch'
     if (h >= 16 && h < 19) return 'Snacks'
-    if (h >= 19 || h < 5) return 'Dinner'
+    if (h >= 19 && h < 23) return 'Dinner'
     return 'Other'
   }
 
