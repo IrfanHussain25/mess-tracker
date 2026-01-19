@@ -41,13 +41,11 @@ export default function Home() {
       if (typeof window !== 'undefined') {
         const params = new URLSearchParams(window.location.search)
         
-        // Success Flag
         if (params.get('share') === 'true') {
           handleSharedFile()
           window.history.replaceState({}, '', '/')
         }
         
-        // Error Flag (from Service Worker fallback)
         if (params.get('share_error')) {
           toast.error("Share missed. Please try again.")
           window.history.replaceState({}, '', '/')
@@ -65,27 +63,24 @@ export default function Home() {
   // --- ROBUST PWA SHARE HANDLER ---
   const handleSharedFile = async () => {
     const t = toast.loading("Loading shared bill...")
-    
     try {
-      // Use Version 3 (Matches your Service Worker)
       const request = indexedDB.open('MessWiseDB', 3)
       
       request.onerror = (e) => {
-        console.error("DB Open Error:", e)
+        console.error("DB Error", e)
         toast.dismiss(t)
-        toast.error("Cannot access storage")
+        toast.error("Storage access failed")
       }
 
       request.onsuccess = (e: any) => {
         const db = e.target.result
         
-        // AUTO-REPAIR: If store is missing, delete DB and reset
         if (!db.objectStoreNames.contains('shares')) {
-             console.error("Corrupt DB: 'shares' missing. Deleting DB...")
+             console.error("Store missing. Resetting DB.")
              db.close()
              indexedDB.deleteDatabase('MessWiseDB')
              toast.dismiss(t)
-             toast.error("App updated. Please share the file again!")
+             toast.error("App updated. Please share again!")
              return
         }
 
@@ -96,26 +91,18 @@ export default function Home() {
         getReq.onsuccess = async () => {
           const file = getReq.result
           if (file) {
-            console.log("File Found:", file.name)
-            store.delete('shared-file') // Clean up
+            store.delete('shared-file') 
             toast.dismiss(t)
             await processOCR(file) 
           } else {
-            console.warn("No file in DB")
             toast.dismiss(t)
             toast.error("Share Empty. Try again.")
           }
         }
-        
-        getReq.onerror = () => {
-          toast.dismiss(t)
-          toast.error("Read failed")
-        }
       }
     } catch (err) {
-      console.error("Critical Share Error:", err)
+      console.error(err)
       toast.dismiss(t)
-      toast.error("Share Failed")
     }
   }
 
@@ -202,11 +189,27 @@ export default function Home() {
         const dateStr = match[2]
         const timeStr = match[3]
         let amount = parseInt(match[4])
-
         const amtStr = amount.toString()
+
+        // --- SMART PHANTOM DIGIT FIX ---
+
+        // CASE 1: Large Numbers (>1000) starting with 2 or 3
+        // e.g., 2345 -> 345 (Correct, 300+ allowed)
+        // e.g., 3237 -> 237 (Correct)
         if (amount > 1000 && (amtStr.startsWith('2') || amtStr.startsWith('3'))) {
            amount = parseInt(amtStr.substring(1))
         }
+        
+        // CASE 2: The 300-Range Glitch
+        // Only runs if Case 1 didn't already run (using 'else if')
+        // e.g., 397 -> 97 (Correct)
+        // e.g., 365 -> 65 (Correct)
+        // e.g., 345 -> 345 (Skipped, because 345 comes from Case 1 which had 'else')
+        else if (amount >= 300 && amount <= 399) {
+           amount = parseInt(amtStr.substring(1))
+        }
+
+        // --- END FIX ---
 
         let timestamp = new Date().toISOString()
         let mealType = 'Other'
