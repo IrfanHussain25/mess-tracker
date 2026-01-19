@@ -281,7 +281,7 @@ export default function Home() {
   }
 
   if (!user && !loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6 text-gray-900">
       <div className="w-full max-w-sm bg-white p-8 rounded-3xl shadow-xl space-y-6">
         <h1 className="text-3xl font-bold text-center text-purple-600">MessWise</h1>
         <input className="w-full border p-4 rounded-xl outline-none" placeholder="Email" onChange={e => setEmail(e.target.value)} />
