@@ -130,8 +130,12 @@ export default function Home() {
   const handleManualAdd = async (amt: string, dateStr: string) => {
     const d = dateStr ? new Date(dateStr) : new Date()
     const h = d.getHours()
+    const m = d.getMinutes()
     let type = 'Other'
-    if (h>=7 && h<11) type='Breakfast'; else if(h>=12 && h<16) type='Lunch'; else if(h>=19) type='Dinner'
+    if (h >= 7 && h < 11) type = 'Breakfast'
+    else if (h >= 11 && h < 15) type = 'Lunch'
+    else if (h >= 16 && (h < 18 || (h === 18 && m <= 40))) type = 'Snacks'
+    else if ((h === 18 && m > 40) || h >= 19 && h < 23) type = 'Dinner'
 
     const { error } = await supabase.from('mess_logs').insert({ user_id: user.id, amount: parseInt(amt), bill_date: d.toISOString(), meal_type: type })
     
@@ -209,18 +213,28 @@ export default function Home() {
            amount = parseInt(amtStr.substring(1))
         }
 
-        // --- END FIX ---
-
         let timestamp = new Date().toISOString()
         let mealType = 'Other'
+        
         try {
           const d = new Date(`${dateStr} ${timeStr}`)
           timestamp = d.toISOString()
+          
           const h = d.getHours()
+          const m = d.getMinutes()
+
+          // Breakfast: 7 AM - 10:59 AM
           if (h >= 7 && h < 11) mealType = 'Breakfast'
-          else if (h >= 12 && h < 16) mealType = 'Lunch'
-          else if (h >= 17 && h < 19) mealType = 'Snacks'
-          else if (h >= 19 || h < 4) mealType = 'Dinner'
+          
+          // Lunch: 11 AM - 2:59 PM
+          else if (h >= 11 && h < 15) mealType = 'Lunch'
+          
+          // Snacks: 4 PM - 6:30 PM
+          else if (h >= 16 && (h < 18 || (h === 18 && m <= 40))) mealType = 'Snacks'
+          
+          // Dinner: 6:31 PM - 11 PM
+          else if ((h === 18 && m > 40) || h >= 19 && h < 23) mealType = 'Dinner'
+          
         } catch (e) {
           console.error("Date parse error", e)
         }
